@@ -13,7 +13,30 @@
 static const char *TAG = "main";
 
 #define DISPLAY_DIM_DELAY_MS 60000
-#define CLOCK_DISPLAY_DELAY_MS 10000
+
+static bool update_clock_screensaver(TickType_t now, TickType_t display_started,
+                                    bool clock_shown)
+{
+    openwrt_status_t status;
+    openwrt_status_get(&status);
+
+    bool should_show = false;
+    if (status.screensaver_timeout > 0) {
+        uint64_t elapsed_ms = (uint64_t)(now - display_started) * portTICK_PERIOD_MS;
+        uint64_t timeout_ms = (uint64_t)status.screensaver_timeout * 1000ULL;
+        should_show = elapsed_ms >= timeout_ms;
+    }
+    if (should_show != clock_shown) {
+        status_dashboard_set_clock_visible(should_show);
+        if (should_show) {
+            ESP_LOGI(TAG, "Idle clock displayed after %lu seconds",
+                     (unsigned long)status.screensaver_timeout);
+        } else {
+            ESP_LOGI(TAG, "Idle clock disabled/hidden");
+        }
+    }
+    return should_show;
+}
 
 void app_main(void)
 {
@@ -51,11 +74,8 @@ void app_main(void)
                 display_dimmed = true;
                 ESP_LOGI(TAG, "Display brightness reduced to 25%%");
             }
-            if (!clock_shown && xTaskGetTickCount() - display_started >=
-                                pdMS_TO_TICKS(CLOCK_DISPLAY_DELAY_MS)) {
-                status_dashboard_set_clock_visible(true);
-                clock_shown = true;
-            }
+            clock_shown = update_clock_screensaver(xTaskGetTickCount(), display_started,
+                                                    clock_shown);
             if (status_dashboard_process_ui_requests()) {
                 board_display_set_brightness(50);
                 display_started = xTaskGetTickCount();
@@ -91,11 +111,7 @@ void app_main(void)
             display_dimmed = true;
             ESP_LOGI(TAG, "Display brightness reduced to 25%%");
         }
-        if (!clock_shown && now - display_started >= pdMS_TO_TICKS(CLOCK_DISPLAY_DELAY_MS)) {
-            status_dashboard_set_clock_visible(true);
-            clock_shown = true;
-            ESP_LOGI(TAG, "Idle clock displayed");
-        }
+        clock_shown = update_clock_screensaver(now, display_started, clock_shown);
         if (now - last_update >= pdMS_TO_TICKS(500)) {
             status_dashboard_update();
             last_update = now;

@@ -194,6 +194,16 @@ static esp_err_t fetch_status(void)
     if (cJSON_IsString(system_time)) {
         strlcpy(next.system_time, system_time->valuestring, sizeof(next.system_time));
     }
+    cJSON *screensaver_timeout = cJSON_GetObjectItemCaseSensitive(root, "screensaver_timeout");
+    if (cJSON_IsNumber(screensaver_timeout) && screensaver_timeout->valuedouble > 0) {
+        double timeout = screensaver_timeout->valuedouble;
+        next.screensaver_timeout = timeout > UINT32_MAX ? UINT32_MAX : (uint32_t)timeout;
+    }
+    cJSON *screensaver_type = cJSON_GetObjectItemCaseSensitive(root, "screensaver_type");
+    if (cJSON_IsString(screensaver_type)) {
+        strlcpy(next.screensaver_type, screensaver_type->valuestring,
+                sizeof(next.screensaver_type));
+    }
     cJSON_Delete(root);
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
