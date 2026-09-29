@@ -186,6 +186,14 @@ static esp_err_t fetch_status(void)
     }
     cJSON *hostname = cJSON_GetObjectItemCaseSensitive(root, "hostname");
     if (cJSON_IsString(hostname)) strlcpy(next.hostname, hostname->valuestring, sizeof(next.hostname));
+    cJSON *system_date = cJSON_GetObjectItemCaseSensitive(root, "system_date");
+    if (cJSON_IsString(system_date)) {
+        strlcpy(next.system_date, system_date->valuestring, sizeof(next.system_date));
+    }
+    cJSON *system_time = cJSON_GetObjectItemCaseSensitive(root, "system_time");
+    if (cJSON_IsString(system_time)) {
+        strlcpy(next.system_time, system_time->valuestring, sizeof(next.system_time));
+    }
     cJSON_Delete(root);
 
     xSemaphoreTake(s_lock, portMAX_DELAY);

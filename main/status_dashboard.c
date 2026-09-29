@@ -8,6 +8,9 @@
 #include "lvgl.h"
 #include "openwrt_status.h"
 
+LV_FONT_DECLARE(dseg14_64);
+LV_FONT_DECLARE(dseg14_40);
+
 #define HIGH_TRAFFIC_THRESHOLD_BPS (10ULL * 1024ULL * 1024ULL)
 #define FULLSCREEN_TRAFFIC_ENABLED 0 /* Keep manual BOOT waveform switching. */
 #define DOWNLOAD_FULL_SCALE_BPS (250ULL * 1024ULL * 1024ULL)
@@ -44,6 +47,20 @@ static lv_obj_t *s_traffic_alert_rate;
 static lv_obj_t *s_traffic_alert_upload_rate;
 static lv_obj_t *s_traffic_alert_stats;
 static lv_obj_t *s_traffic_chart;
+static lv_obj_t *s_clock_page;
+static lv_obj_t *s_clock_time;
+static lv_obj_t *s_clock_date;
+typedef struct {
+    bool synced;
+    int year;
+    int month;
+    int day;
+    int hour;
+    int minute;
+    int second;
+    int64_t sync_us;
+} local_clock_t;
+static local_clock_t s_local_clock;
 static lv_chart_series_t *s_download_series;
 static lv_chart_series_t *s_upload_series;
 typedef struct {
@@ -65,7 +82,10 @@ static uint8_t s_default_interface_index;
 static int64_t s_default_interface_switch_us;
 static atomic_bool s_page_toggle_requested;
 static atomic_bool s_interface_lock_toggle_requested;
+static atomic_bool s_wake_requested;
 static atomic_bool s_traffic_page_visible;
+static atomic_bool s_clock_visible;
+static uint8_t s_clock_shift_index = UINT8_MAX;
 static bool s_default_interface_locked;
 static char s_current_default_interface_name[OPENWRT_INTERFACE_NAME_LEN];
 static char s_locked_interface_name[OPENWRT_INTERFACE_NAME_LEN];
@@ -126,6 +146,106 @@ static chart_redraw_animation_t s_redraw_animation;
 static void set_label_if_changed(lv_obj_t *label, const char *text)
 {
     if (strcmp(lv_label_get_text(label), text) != 0) lv_label_set_text(label, text);
+}
+
+static void update_digital_clock(const char *time_text, const char *date_text)
+{
+    if (!time_text) time_text = "--:--:--";
+    if (!date_text) date_text = "----------";
+    set_label_if_changed(s_clock_time, time_text);
+    set_label_if_changed(s_clock_date, date_text);
+}
+
+static bool leap_year(int year)
+{
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+static int days_in_month(int year, int month)
+{
+    static const uint8_t days[] = {31, 28, 31, 30, 31, 30,
+                                   31, 31, 30, 31, 30, 31};
+    if (month == 2 && leap_year(year)) return 29;
+    return days[month - 1];
+}
+
+static void sync_clock_once(const openwrt_status_t *status)
+{
+    if (s_local_clock.synced || !status->valid ||
+        !status->system_date[0] || !status->system_time[0]) {
+        return;
+    }
+    local_clock_t parsed = {0};
+    if (sscanf(status->system_date, "%d-%d-%d",
+               &parsed.year, &parsed.month, &parsed.day) != 3 ||
+        sscanf(status->system_time, "%d:%d:%d",
+               &parsed.hour, &parsed.minute, &parsed.second) != 3 ||
+        parsed.year < 2000 || parsed.month < 1 || parsed.month > 12 ||
+        parsed.day < 1 || parsed.day > days_in_month(parsed.year, parsed.month) ||
+        parsed.hour < 0 || parsed.hour > 23 ||
+        parsed.minute < 0 || parsed.minute > 59 ||
+        parsed.second < 0 || parsed.second > 59) {
+        return;
+    }
+    parsed.sync_us = esp_timer_get_time();
+    parsed.synced = true;
+    s_local_clock = parsed;
+}
+
+static void update_clock_labels(void)
+{
+    if (!s_local_clock.synced) {
+        update_digital_clock(NULL, NULL);
+        return;
+    }
+
+    uint64_t elapsed = (uint64_t)(esp_timer_get_time() - s_local_clock.sync_us) / 1000000ULL;
+    uint64_t total = (uint64_t)s_local_clock.hour * 3600ULL +
+                     (uint64_t)s_local_clock.minute * 60ULL +
+                     (uint64_t)s_local_clock.second + elapsed;
+    uint64_t extra_days = total / 86400ULL;
+    total %= 86400ULL;
+    int year = s_local_clock.year;
+    int month = s_local_clock.month;
+    int day = s_local_clock.day;
+    while (extra_days > 0) {
+        extra_days--;
+        if (++day > days_in_month(year, month)) {
+            day = 1;
+            if (++month > 12) {
+                month = 1;
+                year++;
+            }
+        }
+    }
+
+    char time_text[40];
+    char date_text[40];
+    unsigned int hour = (unsigned int)(total / 3600ULL);
+    unsigned int minute = (unsigned int)((total % 3600ULL) / 60ULL);
+    unsigned int second = (unsigned int)(total % 60ULL);
+    static const int8_t shift_x[] = {0, 2, 3, 2, 0, -2, -3, -2};
+    static const int8_t shift_y[] = {-3, -2, 0, 2, 3, 2, 0, -2};
+    uint8_t shift_index = (uint8_t)((total / 60ULL) %
+                                    (sizeof(shift_x) / sizeof(shift_x[0])));
+    if (shift_index != s_clock_shift_index) {
+        lv_obj_align(s_clock_time, LV_ALIGN_CENTER,
+                     shift_x[shift_index], -42 + shift_y[shift_index]);
+        lv_obj_align(s_clock_date, LV_ALIGN_CENTER,
+                     shift_x[shift_index], 42 + shift_y[shift_index]);
+        s_clock_shift_index = shift_index;
+    }
+    /* Keep a fixed-width 24-hour clock. On odd seconds, recolor only the
+     * separators to the page background so the digits never move. */
+    if ((second & 1U) == 0U) {
+        snprintf(time_text, sizeof(time_text), "%02u:%02u:%02u",
+                 hour, minute, second);
+    } else {
+        snprintf(time_text, sizeof(time_text), "%02u#071321 :#%02u#071321 :#%02u",
+                 hour, minute, second);
+    }
+    snprintf(date_text, sizeof(date_text), "%04d-%02d-%02d", year, month, day);
+    update_digital_clock(time_text, date_text);
 }
 
 static void update_lock_indicator(void)
@@ -245,18 +365,59 @@ void status_dashboard_request_interface_lock_toggle(void)
     atomic_store(&s_interface_lock_toggle_requested, true);
 }
 
+void status_dashboard_request_wake(void)
+{
+    atomic_store(&s_wake_requested, true);
+}
+
 bool status_dashboard_is_default_page(void)
 {
     return !atomic_load(&s_traffic_page_visible);
+}
+
+bool status_dashboard_is_clock_visible(void)
+{
+    return atomic_load(&s_clock_visible);
+}
+
+static void set_clock_page_visible(bool visible)
+{
+    if (!s_clock_page) return;
+    bool hidden = lv_obj_has_flag(s_clock_page, LV_OBJ_FLAG_HIDDEN);
+    if (visible && hidden) {
+        lv_obj_move_foreground(s_clock_page);
+        lv_obj_clear_flag(s_clock_page, LV_OBJ_FLAG_HIDDEN);
+    } else if (!visible && !hidden) {
+        lv_obj_add_flag(s_clock_page, LV_OBJ_FLAG_HIDDEN);
+    }
+    atomic_store(&s_clock_visible, visible);
+}
+
+void status_dashboard_set_clock_visible(bool visible)
+{
+    if (visible == atomic_load(&s_clock_visible)) return;
+    board_display_lock();
+    set_clock_page_visible(visible);
+    board_display_unlock();
 }
 
 bool status_dashboard_process_ui_requests(void)
 {
     bool page_requested = atomic_exchange(&s_page_toggle_requested, false);
     bool lock_requested = atomic_exchange(&s_interface_lock_toggle_requested, false);
-    if (!page_requested && !lock_requested) return false;
+    bool wake_requested = atomic_exchange(&s_wake_requested, false);
+    if (!page_requested && !lock_requested && !wake_requested) return false;
 
     board_display_lock();
+    if (atomic_load(&s_clock_visible)) {
+        set_clock_page_visible(false);
+        board_display_unlock();
+        return true;
+    }
+    if (wake_requested && !page_requested && !lock_requested) {
+        board_display_unlock();
+        return true;
+    }
     if (lock_requested && !atomic_load(&s_traffic_page_visible)) {
         if (s_default_interface_locked) {
             s_default_interface_locked = false;
@@ -463,7 +624,8 @@ void status_dashboard_animate_frame(void)
 {
     board_display_lock();
     /* The traffic page is opaque; do not redraw the hidden cards. */
-    if (s_traffic_alert && !lv_obj_has_flag(s_traffic_alert, LV_OBJ_FLAG_HIDDEN)) {
+    if ((s_clock_page && !lv_obj_has_flag(s_clock_page, LV_OBJ_FLAG_HIDDEN)) ||
+        (s_traffic_alert && !lv_obj_has_flag(s_traffic_alert, LV_OBJ_FLAG_HIDDEN))) {
         board_display_unlock();
         return;
     }
@@ -685,6 +847,34 @@ void status_dashboard_init(void)
     s_upload_series = lv_chart_add_series(s_traffic_chart, lv_color_hex(0xFFB84D),
                                           LV_CHART_AXIS_SECONDARY_Y);
     lv_obj_add_flag(s_traffic_alert, LV_OBJ_FLAG_HIDDEN);
+
+    s_clock_page = lv_obj_create(screen);
+    lv_obj_set_size(s_clock_page, 320, 172);
+    lv_obj_set_pos(s_clock_page, 0, 0);
+    lv_obj_set_style_radius(s_clock_page, 0, 0);
+    lv_obj_set_style_border_width(s_clock_page, 0, 0);
+    lv_obj_set_style_pad_all(s_clock_page, 0, 0);
+    lv_obj_set_style_bg_opa(s_clock_page, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_clock_page, lv_color_hex(0x071321), 0);
+    lv_obj_clear_flag(s_clock_page, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_clock_time = lv_label_create(s_clock_page);
+    lv_label_set_text(s_clock_time, "--:--:--");
+    lv_label_set_recolor(s_clock_time, true);
+    lv_obj_set_style_text_font(s_clock_time, &dseg14_64, 0);
+    lv_obj_set_style_text_letter_space(s_clock_time, -4, 0);
+    lv_obj_set_style_text_color(s_clock_time, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(s_clock_time, LV_ALIGN_CENTER, 0, -42);
+
+    s_clock_date = lv_label_create(s_clock_page);
+    lv_label_set_text(s_clock_date, "----------");
+    lv_obj_set_style_text_font(s_clock_date, &dseg14_40, 0);
+    lv_obj_set_style_text_letter_space(s_clock_date, -2, 0);
+    lv_obj_set_style_text_color(s_clock_date, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(s_clock_date, LV_ALIGN_CENTER, 0, 42);
+    update_digital_clock(NULL, NULL);
+    lv_obj_add_flag(s_clock_page, LV_OBJ_FLAG_HIDDEN);
+    atomic_store(&s_clock_visible, false);
     start_liquid_wave_animation();
     board_display_unlock();
 }
@@ -901,6 +1091,8 @@ void status_dashboard_update(void)
     char text[64];
 
     board_display_lock();
+    sync_clock_once(&status);
+    update_clock_labels();
     if (!status.valid) {
         s_current_default_interface_name[0] = '\0';
         update_lock_indicator();

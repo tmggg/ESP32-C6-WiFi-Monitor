@@ -8,6 +8,8 @@ idf_component_register(
         "status_dashboard.c"
         "openwrt_status.c"
         "cpu_load_led.c"
+        "fonts/dseg14_64.c"
+        "fonts/dseg14_40.c"
     INCLUDE_DIRS "."
     REQUIRES esp_wifi esp_event esp_netif nvs_flash esp_http_server esp_http_client
              esp_lcd driver esp_timer esp_system lwip json lvgl led_strip

@@ -13,6 +13,7 @@
 static const char *TAG = "main";
 
 #define DISPLAY_DIM_DELAY_MS 60000
+#define CLOCK_DISPLAY_DELAY_MS 10000
 
 void app_main(void)
 {
@@ -26,6 +27,7 @@ void app_main(void)
     ESP_ERROR_CHECK(cpu_load_led_start());
     TickType_t display_started = xTaskGetTickCount();
     bool display_dimmed = false;
+    bool clock_shown = false;
     status_dashboard_init();
     ESP_ERROR_CHECK(wifi_manager_init());
     ESP_ERROR_CHECK(openwrt_status_start());
@@ -49,10 +51,16 @@ void app_main(void)
                 display_dimmed = true;
                 ESP_LOGI(TAG, "Display brightness reduced to 25%%");
             }
+            if (!clock_shown && xTaskGetTickCount() - display_started >=
+                                pdMS_TO_TICKS(CLOCK_DISPLAY_DELAY_MS)) {
+                status_dashboard_set_clock_visible(true);
+                clock_shown = true;
+            }
             if (status_dashboard_process_ui_requests()) {
                 board_display_set_brightness(50);
                 display_started = xTaskGetTickCount();
                 display_dimmed = false;
+                clock_shown = false;
                 ESP_LOGI(TAG, "Manual page switch: brightness set to 50%%; dim timer reset");
             }
             status_dashboard_animate_frame();
@@ -83,6 +91,11 @@ void app_main(void)
             display_dimmed = true;
             ESP_LOGI(TAG, "Display brightness reduced to 25%%");
         }
+        if (!clock_shown && now - display_started >= pdMS_TO_TICKS(CLOCK_DISPLAY_DELAY_MS)) {
+            status_dashboard_set_clock_visible(true);
+            clock_shown = true;
+            ESP_LOGI(TAG, "Idle clock displayed");
+        }
         if (now - last_update >= pdMS_TO_TICKS(500)) {
             status_dashboard_update();
             last_update = now;
@@ -91,6 +104,7 @@ void app_main(void)
             board_display_set_brightness(50);
             display_started = now;
             display_dimmed = false;
+            clock_shown = false;
             ESP_LOGI(TAG, "Manual page switch: brightness set to 50%%; dim timer reset");
         }
         int64_t handler_started = esp_timer_get_time();

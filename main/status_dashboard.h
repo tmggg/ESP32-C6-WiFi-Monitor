@@ -7,7 +7,10 @@ void status_dashboard_init(void);
 void status_dashboard_update(void);
 void status_dashboard_request_page_toggle(void);
 void status_dashboard_request_interface_lock_toggle(void);
+void status_dashboard_request_wake(void);
 bool status_dashboard_is_default_page(void);
+bool status_dashboard_is_clock_visible(void);
+void status_dashboard_set_clock_visible(bool visible);
 bool status_dashboard_process_ui_requests(void);
 void status_dashboard_animate_frame(void);
 

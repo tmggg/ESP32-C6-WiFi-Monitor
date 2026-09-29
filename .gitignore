@@ -29,3 +29,5 @@ __pycache__/
 *.log
 *.core
 core.*
+
+main/assets/
