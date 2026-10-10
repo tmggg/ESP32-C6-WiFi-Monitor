@@ -80,7 +80,7 @@ static esp_err_t fetch_status(void)
     char encoded_token[385];
     if (!wifi_manager_get_monitor_ip(gateway, sizeof(gateway)) &&
         !wifi_manager_get_gateway(gateway, sizeof(gateway))) {
-        set_message("Gateway unavailable");
+        set_message("No gateway IP");
         return ESP_ERR_INVALID_STATE;
     }
     if (!wifi_manager_get_status_token(token, sizeof(token)) || token[0] == 0) {
@@ -103,15 +103,27 @@ static esp_err_t fetch_status(void)
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
-        set_message("Gateway unavailable");
+        ESP_LOGE(TAG, "HTTP client allocation failed for monitor %s", gateway);
+        set_message("HTTP out of memory");
         return ESP_ERR_NO_MEM;
     }
     esp_err_t err = esp_http_client_perform(client);
     int status_code = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
     if (err != ESP_OK || status_code != 200) {
-        ESP_LOGW(TAG, "Status request failed: %s, HTTP %d", esp_err_to_name(err), status_code);
-        set_message(status_code == 401 ? "Token rejected" : "Gateway unavailable");
+        ESP_LOGW(TAG, "Monitor %s request failed: %s, HTTP %d",
+                 gateway, esp_err_to_name(err), status_code);
+        if (err != ESP_OK) {
+            set_message(err == ESP_ERR_TIMEOUT ? "Monitor timeout" : "Monitor connect failed");
+        } else if (status_code == 401 || status_code == 403) {
+            set_message("Token rejected");
+        } else if (status_code == 404) {
+            set_message("Status API not found");
+        } else {
+            char message[32];
+            snprintf(message, sizeof(message), "Monitor HTTP %d", status_code);
+            set_message(message);
+        }
         return err == ESP_OK ? ESP_FAIL : err;
     }
 
