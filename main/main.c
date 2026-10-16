@@ -13,6 +13,26 @@
 static const char *TAG = "main";
 
 #define DISPLAY_DIM_DELAY_MS 60000
+#define DISPLAY_OFF_DELAY_MS (10U * 60U * 1000U)
+
+static void update_display_idle(TickType_t now, TickType_t last_activity,
+                                bool *dimmed)
+{
+    if (board_display_is_off()) return;
+    TickType_t idle_ticks = now - last_activity;
+    if (idle_ticks >= pdMS_TO_TICKS(DISPLAY_OFF_DELAY_MS)) {
+        esp_err_t err = board_display_set_power(false);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Display idle for 10 minutes: LCD and backlight off");
+        } else {
+            ESP_LOGE(TAG, "Display off failed: %s", esp_err_to_name(err));
+        }
+    } else if (!*dimmed && idle_ticks >= pdMS_TO_TICKS(DISPLAY_DIM_DELAY_MS)) {
+        board_display_set_brightness(25);
+        *dimmed = true;
+        ESP_LOGI(TAG, "Display idle: brightness reduced to 25%%");
+    }
+}
 
 static bool update_clock_screensaver(TickType_t now, TickType_t display_started,
                                     bool clock_shown)
@@ -68,21 +88,17 @@ void app_main(void)
                 connected = true;
                 break;
             }
-            if (!display_dimmed && xTaskGetTickCount() - display_started >=
-                                      pdMS_TO_TICKS(DISPLAY_DIM_DELAY_MS)) {
-                board_display_set_brightness(25);
-                display_dimmed = true;
-                ESP_LOGI(TAG, "Display brightness reduced to 25%%");
-            }
             clock_shown = update_clock_screensaver(xTaskGetTickCount(), display_started,
                                                     clock_shown);
             if (status_dashboard_process_ui_requests()) {
+                ESP_ERROR_CHECK_WITHOUT_ABORT(board_display_set_power(true));
                 board_display_set_brightness(50);
                 display_started = xTaskGetTickCount();
                 display_dimmed = false;
                 clock_shown = false;
                 ESP_LOGI(TAG, "Manual page switch: brightness set to 50%%; dim timer reset");
             }
+            update_display_idle(xTaskGetTickCount(), display_started, &display_dimmed);
             status_dashboard_animate_frame();
             board_display_handle();
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -106,23 +122,20 @@ void app_main(void)
     uint32_t handler_over_budget = 0;
     while (true) {
         TickType_t now = xTaskGetTickCount();
-        if (!display_dimmed && now - display_started >= pdMS_TO_TICKS(DISPLAY_DIM_DELAY_MS)) {
-            board_display_set_brightness(25);
-            display_dimmed = true;
-            ESP_LOGI(TAG, "Display brightness reduced to 25%%");
-        }
         clock_shown = update_clock_screensaver(now, display_started, clock_shown);
         if (now - last_update >= pdMS_TO_TICKS(500)) {
             status_dashboard_update();
             last_update = now;
         }
         if (status_dashboard_process_ui_requests()) {
+            ESP_ERROR_CHECK_WITHOUT_ABORT(board_display_set_power(true));
             board_display_set_brightness(50);
             display_started = now;
             display_dimmed = false;
             clock_shown = false;
             ESP_LOGI(TAG, "Manual page switch: brightness set to 50%%; dim timer reset");
         }
+        update_display_idle(now, display_started, &display_dimmed);
         int64_t handler_started = esp_timer_get_time();
         status_dashboard_animate_frame();
         board_display_handle();

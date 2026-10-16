@@ -1,4 +1,5 @@
 #include "boot_button.h"
+#include "board_display.h"
 
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -22,7 +23,7 @@ static void button_task(void *arg)
     while (true) {
         TickType_t now = xTaskGetTickCount();
         if (gpio_get_level(CONFIG_PROV_BOOT_BUTTON_GPIO) == 0) {
-            if (held_ms == 0 && status_dashboard_is_clock_visible()) {
+            if (held_ms == 0 && (board_display_is_off() || status_dashboard_is_clock_visible())) {
                 status_dashboard_request_wake();
                 wake_only = true;
             }
